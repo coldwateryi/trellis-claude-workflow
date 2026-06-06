@@ -1,0 +1,8 @@
+{
+  "name": "trellis-claude-workflow",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

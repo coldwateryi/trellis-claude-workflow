@@ -17,10 +17,97 @@ export const meta = {
 
 const taskPath = args.taskPath
 const modules = args.modules
-const useWorktree = args.worktree ?? modules.length >= 3
+const moduleCount = Array.isArray(modules) ? modules.length : 0
+const useWorktree = args.worktree ?? moduleCount >= 3
 const globalSpecs = args.globalSpecs || []
 
 phase('Implement')
+
+function validateModules(moduleList) {
+  if (!Array.isArray(moduleList)) {
+    return ['args.modules must be a non-empty array']
+  }
+  if (moduleList.length === 0) {
+    return ['args.modules must include at least one module']
+  }
+
+  const issues = []
+  const keys = new Set()
+  moduleList.forEach((mod, idx) => {
+    if (!mod || typeof mod !== 'object') {
+      issues.push(`module at index ${idx} must be an object`)
+      return
+    }
+    if (!mod.key || typeof mod.key !== 'string') {
+      issues.push(`module at index ${idx} is missing a string key`)
+    } else if (keys.has(mod.key)) {
+      issues.push(`duplicate module key: ${mod.key}`)
+    } else {
+      keys.add(mod.key)
+    }
+    if (!mod.desc || typeof mod.desc !== 'string') {
+      issues.push(`module ${mod.key || idx} is missing a string desc`)
+    }
+  })
+  return issues
+}
+
+function normalizeImplementationResult(mod, result) {
+  if (!result || typeof result !== 'object') {
+    return {
+      valid: false,
+      files: [],
+      summary: 'implementation agent returned null or invalid result',
+      issues: ['implementation agent returned null or invalid result'],
+    }
+  }
+
+  const issues = []
+  if (!Array.isArray(result.files)) {
+    issues.push('implementation agent did not return files')
+  }
+  if (typeof result.summary !== 'string') {
+    issues.push('implementation agent did not return summary')
+  }
+
+  return {
+    valid: issues.length === 0,
+    files: Array.isArray(result.files) ? result.files : [],
+    summary: typeof result.summary === 'string' ? result.summary : `implementation for ${mod.key} did not return summary`,
+    issues,
+  }
+}
+
+function normalizeVerificationResult(result) {
+  if (!result || typeof result !== 'object') {
+    return {
+      passed: false,
+      issues: ['verification agent returned null or invalid result'],
+      summary: 'verification check did not return a result',
+    }
+  }
+
+  const issues = Array.isArray(result.issues) ? [...result.issues] : ['verification agent did not return issues']
+  return {
+    passed: result.passed === true && issues.length === 0,
+    issues,
+    summary: typeof result.summary === 'string' ? result.summary : '',
+  }
+}
+
+const validationIssues = validateModules(modules)
+if (validationIssues.length) {
+  validationIssues.forEach(issue => log(`ERROR: ${issue}`))
+
+  return {
+    total: moduleCount,
+    passed: 0,
+    failed: moduleCount,
+    issues: validationIssues,
+    modules: Array.isArray(modules) ? modules.map(mod => ({ key: mod?.key || '', result: null })) : [],
+  }
+}
+
 log(`Starting parallel implementation of ${modules.length} modules (worktree: ${useWorktree})`)
 
 const results = await pipeline(
@@ -57,34 +144,45 @@ Return the list of files you created or modified and a one-line summary.`,
     )
   },
   // Stage 2: Verify each module immediately after implementation
-  (implResult, mod) => agent(
-    `Active task: ${taskPath}
+  (implResult, mod) => {
+    const implementation = normalizeImplementationResult(mod, implResult)
+    if (!implementation.valid) {
+      return {
+        passed: false,
+        issues: implementation.issues,
+        summary: implementation.summary,
+      }
+    }
+
+    return agent(
+      `Active task: ${taskPath}
 Verify the "${mod.key}" module implementation.
-Files changed: ${implResult.files.join(', ')}
+Files changed: ${implementation.files.join(', ')}
 Run type-check, lint, and unit tests for these files.
 ${args.verifyCmd ? 'Custom verify command: ' + args.verifyCmd : ''}
 Report whether all checks pass and list any issues found.`,
-    {
-      label: `verify:${mod.key}`,
-      phase: 'Verify',
-      agentType: 'trellis-check',
-      schema: {
-        type: 'object',
-        properties: {
-          passed: { type: 'boolean' },
-          issues: { type: 'array', items: { type: 'string' } },
-          summary: { type: 'string' },
+      {
+        label: `verify:${mod.key}`,
+        phase: 'Verify',
+        agentType: 'trellis-check',
+        schema: {
+          type: 'object',
+          properties: {
+            passed: { type: 'boolean' },
+            issues: { type: 'array', items: { type: 'string' } },
+            summary: { type: 'string' },
+          },
+          required: ['passed', 'issues'],
         },
-        required: ['passed', 'issues'],
-      },
-    }
-  )
+      }
+    )
+  }
 )
 
 // Summarize results
-const valid = results.filter(Boolean)
-const passed = valid.filter(r => r.passed)
-const failed = valid.filter(r => !r.passed)
+const normalizedResults = modules.map((_, i) => normalizeVerificationResult(Array.isArray(results) ? results[i] : null))
+const passed = normalizedResults.filter(r => r.passed)
+const failed = normalizedResults.filter(r => !r.passed)
 
 if (failed.length) {
   log(`${failed.length}/${modules.length} modules need fixes`)
@@ -98,6 +196,6 @@ return {
   failed: failed.length,
   modules: modules.map((mod, i) => ({
     key: mod.key,
-    result: valid[i] || null,
+    result: normalizedResults[i],
   })),
 }
