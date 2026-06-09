@@ -407,6 +407,35 @@ Workflow({
 })
 ```
 
+#### 在提示词里如何触发
+
+实际使用中你几乎不手写 `args`——你在主会话里用自然语言表达意图，主循环负责翻译成 `Workflow(...)` 调用。`executor` 的取值由你提示词里的信号词决定：
+
+| 你说什么 | 推断的 `executor` |
+|---|---|
+| 「用 workflow 实现这棵任务树」「按依赖顺序并行实现 XXX 的子任务」 | `'core'`（默认，不提执行方式即核心 agent） |
+| 「执行用 TDD 红绿循环」「走 trellis-skills 的 TDD 流程」「小模型在跑」 | `'skill'` |
+| 「executor 设成 skill」「这次走核心 agent，别用 skill」 | 显式锁定，按你说的来 |
+
+判断标准：
+
+- **不确定 / 用强模型 / 想要原生 Trellis 体验** → 什么都不用提，默认 `'core'`，沿用本体 hook/agent 协议。
+- **执行层是小模型（如 qwen3.6 35b），或想要「测试变绿才算完成」的机械约束** → 提示词带上 “TDD / 红绿循环 / 小模型 / trellis-skills”，触发 `'skill'`，由 `$trellis-implement-tdd` 把实现夹成逐条 AC 的红绿循环。
+
+端到端示例（强模型规划 + 小模型执行）：
+
+```
+你: [粘贴 PRD] /trellis-zero-to-mvp-zh
+        → 强模型拆出父子任务树，标注复杂度
+你: 确认任务树。执行阶段用 qwen3.6 35b，所以走 TDD 红绿循环实现
+        → 主循环生成 Workflow({ name:'trellis-dag-implement', args:{ ..., executor:'skill' } })
+        → 小模型在每个子任务里被 $trellis-implement-tdd「夹」住，只需追「让断言变绿」，卡红切 $trellis-debug-systematic
+你: (若某波失败) 修复 04-user-api 后继续剩余波次
+你: 全部通过，提交
+```
+
+同一棵任务树若用强模型执行，第二句直接说「确认，用 workflow 实现」即可——省略 `executor`，走默认 `'core'`。
+
 ### Trellis 上下文注入
 
 每个 subagent prompt 以 `Active task: ${taskPath}` 开头。

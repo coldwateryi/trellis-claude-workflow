@@ -178,6 +178,46 @@ Each implement/check workflow takes an `executor` arg (default `'core'`):
 
 The two layers are parallel paths, not nested: the core `trellis-implement` / `trellis-check` agents have no Skill tool, so they cannot call the skills — pick one layer per run via `executor`. Research always uses the core `trellis-research` agent (trellis-skills has no research-phase equivalent).
 
+```javascript
+Workflow({
+  name: 'trellis-dag-implement',
+  args: {
+    parentPath: '...',
+    tasks: [ /* ... */ ],
+    executor: 'skill',   // omit for default 'core'
+  }
+})
+```
+
+#### Triggering it from a prompt
+
+In practice you rarely hand-write `args` — you state your intent in the main session in natural language, and the main loop translates it into a `Workflow(...)` call. The value of `executor` is inferred from signal words in your prompt:
+
+| What you say | Inferred `executor` |
+|---|---|
+| "implement this task tree with a workflow" / "implement the children of XXX in dependency order" | `'core'` (default — no execution method mentioned means core agents) |
+| "implement via TDD red-green loop" / "use the trellis-skills TDD flow" / "a small model is running this" | `'skill'` |
+| "set executor to skill" / "use core agents this time, no skills" | explicit lock — done as you say |
+
+Rule of thumb:
+
+- **Unsure / using a strong model / want the native Trellis experience** → mention nothing, defaults to `'core'`, following the upstream hook/agent protocol.
+- **Execution layer is a small model (e.g. qwen3.6 35b), or you want the "done = test goes green" mechanical guardrail** → put "TDD / red-green loop / small model / trellis-skills" in your prompt to trigger `'skill'`, where `$trellis-implement-tdd` clamps implementation into an AC-by-AC red-green loop.
+
+End-to-end example (strong model plans + small model executes):
+
+```
+You: [paste PRD] /trellis-zero-to-mvp
+        → strong model splits a parent/child task tree, annotates complexity
+You: Confirm the task tree. Execution phase uses qwen3.6 35b, so implement via TDD red-green loop
+        → main loop generates Workflow({ name:'trellis-dag-implement', args:{ ..., executor:'skill' } })
+        → in each child task the small model is "clamped" by $trellis-implement-tdd, only chasing "make the assertion green", switching to $trellis-debug-systematic on stuck-red
+You: (if a wave fails) fix 04-user-api then continue the remaining waves
+You: all green, commit
+```
+
+For the same task tree executed by a strong model, just say "confirmed, implement with the workflow" — omit `executor` and it runs the default `'core'`.
+
 ### Trellis context injection
 
 Every subagent prompt starts with `Active task: ${taskPath}`.
