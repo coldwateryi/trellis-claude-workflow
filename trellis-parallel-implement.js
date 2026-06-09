@@ -14,12 +14,40 @@ export const meta = {
 // args.worktree:    boolean - whether to use worktree isolation (default: true for 3+ modules)
 // args.verifyCmd:   string  - custom verify command (default: type-check + lint + test)
 // args.globalSpecs: string[] - spec files injected into ALL subagents
+// args.executor:    'core' | 'skill' - which execution layer to drive each agent (default: 'core')
+//                   'core'  -> Trellis core sub-agents (agentType trellis-implement / trellis-check)
+//                   'skill' -> generic workflow sub-agent driven by trellis-skills ($trellis-implement-tdd /
+//                              $trellis-debug-systematic / $trellis-review-twostage)
 
 const taskPath = args.taskPath
 const modules = args.modules
 const moduleCount = Array.isArray(modules) ? modules.length : 0
 const useWorktree = args.worktree ?? moduleCount >= 3
 const globalSpecs = args.globalSpecs || []
+const executor = args.executor === 'skill' ? 'skill' : 'core'
+
+// Build the implement/verify directives + agent options for the active executor.
+// core  -> Trellis core trellis-implement / trellis-check sub-agents (no skill injection)
+// skill -> generic sub-agent told to drive the trellis-skills TDD/debug/review skills
+function implementDirective(modKey) {
+  return executor === 'skill'
+    ? `Use the $trellis-implement-tdd skill to implement the "${modKey}" module with strict TDD (RED→GREEN→REFACTOR), one acceptance criterion at a time. If a test stays red and the cause is not obvious, switch to the $trellis-debug-systematic skill.\n\n`
+    : ''
+}
+
+function implementAgentType() {
+  return executor === 'skill' ? {} : { agentType: 'trellis-implement' }
+}
+
+function verifyDirective(modKey) {
+  return executor === 'skill'
+    ? `Use the $trellis-review-twostage skill to review the "${modKey}" module before marking it complete: Stage 1 spec compliance against prd.md, then Stage 2 code-quality review.\n`
+    : ''
+}
+
+function verifyAgentType() {
+  return executor === 'skill' ? {} : { agentType: 'trellis-check' }
+}
 
 phase('Implement')
 
@@ -121,7 +149,7 @@ const results = await pipeline(
 
     return agent(
       `Active task: ${taskPath}
-${specInstructions}Read the task's implement.jsonl for full context, then implement the "${mod.key}" module.
+${specInstructions}${implementDirective(mod.key)}Read the task's implement.jsonl for full context.
 
 Requirements: ${mod.desc}
 
@@ -131,7 +159,7 @@ Return the list of files you created or modified and a one-line summary.`,
         label: `impl:${mod.key}`,
         phase: 'Implement',
         ...(useWorktree ? { isolation: 'worktree' } : {}),
-        agentType: 'trellis-implement',
+        ...implementAgentType(),
         schema: {
           type: 'object',
           properties: {
@@ -156,15 +184,14 @@ Return the list of files you created or modified and a one-line summary.`,
 
     return agent(
       `Active task: ${taskPath}
-Verify the "${mod.key}" module implementation.
-Files changed: ${implementation.files.join(', ')}
+${verifyDirective(mod.key)}Files changed: ${implementation.files.join(', ')}
 Run type-check, lint, and unit tests for these files.
 ${args.verifyCmd ? 'Custom verify command: ' + args.verifyCmd : ''}
 Report whether all checks pass and list any issues found.`,
       {
         label: `verify:${mod.key}`,
         phase: 'Verify',
-        agentType: 'trellis-check',
+        ...verifyAgentType(),
         schema: {
           type: 'object',
           properties: {

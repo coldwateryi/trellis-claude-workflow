@@ -15,12 +15,40 @@ export const meta = {
 // args.worktree:    boolean - use worktree isolation within each wave (default: true)
 // args.stopOnFail:  boolean - halt all downstream waves on failure (default: true)
 // args.globalSpecs: string[] - spec files injected into ALL subagents (e.g. shared coding standards)
+// args.executor:    'core' | 'skill' - which execution layer to drive each agent (default: 'core')
+//                   'core'  -> Trellis core sub-agents (agentType trellis-implement / trellis-check)
+//                   'skill' -> generic workflow sub-agent driven by trellis-skills ($trellis-implement-tdd /
+//                              $trellis-debug-systematic / $trellis-review-twostage)
 
 const tasks = args.tasks
 const parentPath = args.parentPath
 const stopOnFail = args.stopOnFail ?? true
 const useWorktree = args.worktree ?? true
 const globalSpecs = args.globalSpecs || []
+const executor = args.executor === 'skill' ? 'skill' : 'core'
+
+// Build the implement-step prompt body + agent options for the active executor.
+// core  -> Trellis core `trellis-implement` sub-agent (no skill injection; it loads context itself)
+// skill -> generic sub-agent told to drive the trellis-skills TDD/debug skills
+function implementDirective() {
+  return executor === 'skill'
+    ? 'Use the $trellis-implement-tdd skill to implement this subtask with strict TDD (RED→GREEN→REFACTOR), one acceptance criterion at a time. If a test stays red and the cause is not obvious, switch to the $trellis-debug-systematic skill.\n\n'
+    : ''
+}
+
+function implementAgentType() {
+  return executor === 'skill' ? {} : { agentType: 'trellis-implement' }
+}
+
+function checkDirective() {
+  return executor === 'skill'
+    ? 'Apply the $trellis-review-twostage skill: '
+    : ''
+}
+
+function checkAgentType() {
+  return executor === 'skill' ? {} : { agentType: 'trellis-check' }
+}
 
 // --- Phase 1: Topological sort into waves ---
 phase('Plan')
@@ -195,7 +223,7 @@ for (let i = 0; i < waves.length; i++) {
 
       return agent(
         `Active task: ${task.path}
-${specInstructions}Read the task's implement.jsonl and prd.md for full context.
+${specInstructions}${implementDirective()}Read the task's implement.jsonl and prd.md for full context.
 This task depends on: ${task.deps.length ? task.deps.join(', ') : 'nothing (no dependencies)'}.
 ${task.deps.length ? 'Those dependencies are already implemented and verified.' : ''}
 
@@ -206,7 +234,7 @@ Return the files changed, test results, and a summary.`,
           label: `wave${i + 1}:${task.key}`,
           phase: 'Execute',
           ...(useWorktree && wave.length > 1 ? { isolation: 'worktree' } : {}),
-          agentType: 'trellis-implement',
+          ...implementAgentType(),
           schema: {
             type: 'object',
             properties: {
@@ -253,7 +281,7 @@ if (halted) {
 All child tasks have been implemented:
 ${Object.entries(allResults).map(([k, v]) => `- ${k}: ${v.summary}`).join('\n')}
 
-Run a cross-module integration check:
+${checkDirective()}Run a cross-module integration check:
 1. Verify imports between modules resolve correctly
 2. Run the full test suite (not just per-module)
 3. Check for type errors across module boundaries
@@ -261,7 +289,7 @@ Report any integration issues found.`,
     {
       label: 'integration-check',
       phase: 'Integrate',
-      agentType: 'trellis-check',
+      ...checkAgentType(),
       schema: {
         type: 'object',
         properties: {

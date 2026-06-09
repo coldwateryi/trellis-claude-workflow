@@ -144,7 +144,7 @@ Workflow({
 
 **Behavior:**
 - Uses `parallel()` with barrier — synthesis needs ALL findings together
-- Each research agent uses `trellis-research` agentType (web + codebase search)
+- Each research agent uses the Trellis core `trellis-research` agentType (web + codebase search; research has no trellis-skills equivalent)
 - Final synthesis agent writes a decision report
 - Returns `{findings, synthesis, outputFile}`
 
@@ -169,10 +169,19 @@ Use `parallel()` barrier ONLY when:
 - Dedup across all results before expensive next stage
 - Early-exit if total count is zero
 
+### Execution layer (core agents vs trellis-skills)
+
+Each implement/check workflow takes an `executor` arg (default `'core'`):
+
+- **`'core'`** — dispatches the Trellis core sub-agents (`agentType: trellis-implement` / `trellis-check`), shipped by Trellis itself under `.claude/agents/`. They load task context via the Trellis hook/agent protocol. This is the default and matches stock Trellis behavior.
+- **`'skill'`** — dispatches a generic workflow sub-agent and injects the [trellis-skills](https://github.com/coldwateryi/trellis-skills) enhancement skills into the prompt: `$trellis-implement-tdd` (RED→GREEN→REFACTOR, falling back to `$trellis-debug-systematic` on stuck-red), and `$trellis-review-twostage` for verification.
+
+The two layers are parallel paths, not nested: the core `trellis-implement` / `trellis-check` agents have no Skill tool, so they cannot call the skills — pick one layer per run via `executor`. Research always uses the core `trellis-research` agent (trellis-skills has no research-phase equivalent).
+
 ### Trellis context injection
 
 Every subagent prompt starts with `Active task: ${taskPath}`.
-This tells `trellis-implement` / `trellis-check` where to find:
+This tells the core agents (`trellis-implement` / `trellis-check` / `trellis-research`) or the injected `$trellis-implement-tdd` / `$trellis-review-twostage` skills where to find:
 - `implement.jsonl` — file list and role context
 - `prd.md` — acceptance criteria
 - `design.md` — architectural constraints
@@ -256,4 +265,4 @@ Waves:
 | Independent modules, no deps | `trellis-parallel-implement` | pipeline, fastest |
 | Tasks with dependency order | `trellis-dag-implement` | wave-based DAG |
 | Multi-direction research | `trellis-parallel-research` | barrier + synthesis |
-| Single complex task | Direct `trellis-implement` | no workflow needed |
+| Single complex task | Direct `trellis-implement` agent (or `$trellis-implement-tdd` skill) | no workflow needed |

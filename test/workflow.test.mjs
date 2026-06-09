@@ -164,3 +164,83 @@ test('research workflow preserves failed findings and asks synthesis to write ou
   assert.equal(result.synthesis.outputFile, 'research/decision.md')
   assert.match(agentCalls.at(-1).prompt, /Write the decision report to research\/decision\.md/)
 })
+
+test('dag workflow defaults to Trellis core sub-agents and injects no skill', async () => {
+  const { agentCalls } = await runWorkflow('trellis-dag-implement.js', {
+    args: {
+      parentPath: '.trellis/tasks/parent',
+      tasks: [{ key: 'model', path: '.trellis/tasks/model', deps: [] }],
+    },
+    agent: async () => ({ key: 'model', files: ['model.js'], passed: true, summary: 'done' }),
+  })
+
+  const implCall = agentCalls.find(c => c.config.label === 'wave1:model')
+  const checkCall = agentCalls.find(c => c.config.label === 'integration-check')
+  assert.equal(implCall.config.agentType, 'trellis-implement')
+  assert.equal(checkCall.config.agentType, 'trellis-check')
+  assert.doesNotMatch(implCall.prompt, /\$trellis-implement-tdd/)
+  assert.doesNotMatch(checkCall.prompt, /\$trellis-review-twostage/)
+})
+
+test('dag workflow skill executor drops agentType and injects trellis-skills directives', async () => {
+  const { agentCalls } = await runWorkflow('trellis-dag-implement.js', {
+    args: {
+      parentPath: '.trellis/tasks/parent',
+      executor: 'skill',
+      tasks: [{ key: 'model', path: '.trellis/tasks/model', deps: [] }],
+    },
+    agent: async () => ({ key: 'model', files: ['model.js'], passed: true, summary: 'done' }),
+  })
+
+  const implCall = agentCalls.find(c => c.config.label === 'wave1:model')
+  const checkCall = agentCalls.find(c => c.config.label === 'integration-check')
+  assert.equal(implCall.config.agentType, undefined)
+  assert.equal(checkCall.config.agentType, undefined)
+  assert.match(implCall.prompt, /\$trellis-implement-tdd/)
+  assert.match(implCall.prompt, /\$trellis-debug-systematic/)
+  assert.match(checkCall.prompt, /\$trellis-review-twostage/)
+})
+
+test('parallel implement workflow defaults to core agents, skill executor injects directives', async () => {
+  const coreRun = await runWorkflow('trellis-parallel-implement.js', {
+    args: { taskPath: '.trellis/tasks/feature', modules: [{ key: 'api', desc: 'API module' }] },
+    agent: async (_prompt, config) =>
+      config.label === 'impl:api'
+        ? { files: ['api.js'], summary: 'built' }
+        : { passed: true, issues: [], summary: 'verified' },
+  })
+  const coreImpl = coreRun.agentCalls.find(c => c.config.label === 'impl:api')
+  const coreVerify = coreRun.agentCalls.find(c => c.config.label === 'verify:api')
+  assert.equal(coreImpl.config.agentType, 'trellis-implement')
+  assert.equal(coreVerify.config.agentType, 'trellis-check')
+  assert.doesNotMatch(coreImpl.prompt, /\$trellis-implement-tdd/)
+
+  const skillRun = await runWorkflow('trellis-parallel-implement.js', {
+    args: { taskPath: '.trellis/tasks/feature', executor: 'skill', modules: [{ key: 'api', desc: 'API module' }] },
+    agent: async (_prompt, config) =>
+      config.label === 'impl:api'
+        ? { files: ['api.js'], summary: 'built' }
+        : { passed: true, issues: [], summary: 'verified' },
+  })
+  const skillImpl = skillRun.agentCalls.find(c => c.config.label === 'impl:api')
+  const skillVerify = skillRun.agentCalls.find(c => c.config.label === 'verify:api')
+  assert.equal(skillImpl.config.agentType, undefined)
+  assert.equal(skillVerify.config.agentType, undefined)
+  assert.match(skillImpl.prompt, /\$trellis-implement-tdd/)
+  assert.match(skillVerify.prompt, /\$trellis-review-twostage/)
+})
+
+test('research workflow always uses the Trellis core research agent', async () => {
+  const { agentCalls } = await runWorkflow('trellis-parallel-research.js', {
+    args: {
+      taskPath: '.trellis/tasks/research',
+      questions: [{ key: 'lib', question: 'Which library?' }],
+    },
+    agent: async (_prompt, config) =>
+      config.label === 'synthesize'
+        ? { outputFile: 'research/synthesis.md', summary: 'done' }
+        : { key: 'lib', findings: ['f'], recommendation: 'r', confidence: 'high', sources: [] },
+  })
+
+  assert.ok(agentCalls.every(c => c.config.agentType === 'trellis-research'))
+})

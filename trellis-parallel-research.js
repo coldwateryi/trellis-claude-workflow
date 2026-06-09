@@ -12,6 +12,10 @@ export const meta = {
 // args.taskPath:    string   - path to the active Trellis task directory
 // args.questions:   array    - [{key, question}] list of research questions
 // args.outputFile:  string   - where to write the synthesis (default: research/synthesis.md)
+//
+// Research always runs on the Trellis core `trellis-research` sub-agent: it owns the
+// research/ persistence contract and there is no trellis-skills research equivalent,
+// so this workflow has no `executor` switch (unlike the implement/dag workflows).
 
 const taskPath = args.taskPath
 const questions = args.questions

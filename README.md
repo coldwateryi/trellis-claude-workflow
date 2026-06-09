@@ -144,7 +144,7 @@ Workflow({
 
 **行为：**
 - 使用 `parallel()` + barrier — 合成需要所有研究结果
-- 每个研究 agent 使用 `trellis-research` agentType
+- 每个研究 agent 以 Trellis 核心 `trellis-research` agentType 派发（研究始终走核心 agent，不随 `executor` 切换）
 - 最终合成 agent 写出决策报告
 - 返回 `{findings, synthesis, outputFile}`
 
@@ -193,7 +193,7 @@ Workflow({
 | 独立模块，无依赖 | `trellis-parallel-implement` | pipeline 最快 |
 | 有 DAG 依赖的任务树 | `trellis-dag-implement` | 拓扑分波 + 波内并行 |
 | 多方向技术调研 | `trellis-parallel-research` | barrier + 合成 |
-| 单个复杂任务 | 直接用 `trellis-implement` | 不需要 workflow |
+| 单个复杂任务 | 直接派发 `trellis-implement` agent | 不需要 workflow |
 
 ---
 
@@ -281,7 +281,7 @@ Wave 4: [=====05-user-ui=====] ✓
 
 #### Step 5: 每个 subagent 收到的 prompt
 
-以 Wave 3 中的 `04-user-api` 为例：
+以 Wave 3 中的 `04-user-api` 为例（默认 `executor: 'core'`）：
 
 ```
 Active task: .trellis/tasks/05-28-hub-user-system/children/04-user-api
@@ -294,13 +294,15 @@ After implementation, run type-check and tests to verify correctness.
 Return the files changed, test results, and a summary.
 ```
 
-Agent 类型 `trellis-implement` 会自动：
+该 subagent 以 Trellis 核心 `trellis-implement` agentType 派发，由 Trellis 自身的 hook/agent 协议接管：
 1. 读取 `implement.jsonl` → 文件列表和角色上下文
 2. 读取 `prd.md` → 验收标准
 3. 读取 `design.md`（如有）→ 技术设计约束
 4. 读取 `implement.md` → 具体实现步骤
 5. 实现代码 + 写测试 + 跑验证
 6. 返回结构化结果
+
+若传入 `executor: 'skill'`，则改用通用 workflow 子代理，prompt 顶部注入 `$trellis-implement-tdd` skill（卡红时切 `$trellis-debug-systematic`），由 trellis-skills 接管 TDD 红绿循环。详见下文「执行层选择」。
 
 #### Step 6: 失败处理
 
@@ -378,10 +380,37 @@ pipeline: 完成即进入下一阶段         parallel+barrier: 等所有完成�
 - 需要跨结果去重后再进入昂贵的下游阶段
 - 总数为 0 时提前退出
 
+### 执行层选择（`args.executor`）
+
+本项目要适配两层：
+
+- **Trellis 本体**（github.com/mindfold-ai/Trellis）提供 `trellis-implement` / `trellis-check` / `trellis-research` 三个**核心 sub-agent**（`.claude/agents/`），通过 `agentType` 派发。
+- **trellis-skills**（增强层）提供 `trellis-implement-tdd` / `trellis-review-twostage` / `trellis-debug-systematic` 等 **skill**，通过 `$skill-name` 触发。
+
+两者是**平行的执行路径，不能嵌套**：Trellis 核心 `trellis-implement` / `trellis-check` agent 的 frontmatter 不带 Skill 工具，无法在 agent 内部再调用 skill。因此 implement / dag workflow 用 `args.executor` 二选一：
+
+| `executor` | 实现/验证 agent | 适用场景 |
+|---|---|---|
+| `'core'`（默认） | 核心 `trellis-implement` / `trellis-check` agentType | 标准 Trellis 项目，沿用本体 hook/agent 协议 |
+| `'skill'` | 通用 workflow 子代理 + 注入 `$trellis-implement-tdd` / `$trellis-debug-systematic` / `$trellis-review-twostage` | 想用 trellis-skills 的强约束 TDD/评审流程（尤其驱动小模型时） |
+
+研究始终走核心 `trellis-research` agent（trellis-skills 无对应研究执行 skill），不受 `executor` 影响。
+
+```javascript
+Workflow({
+  name: 'trellis-dag-implement',
+  args: {
+    parentPath: '...',
+    tasks: [ /* ... */ ],
+    executor: 'skill',   // 省略则默认 'core'
+  }
+})
+```
+
 ### Trellis 上下文注入
 
 每个 subagent prompt 以 `Active task: ${taskPath}` 开头。
-`trellis-implement` / `trellis-check` 据此找到：
+核心 agent（`trellis-implement` / `trellis-check` / `trellis-research`）或注入的 `$trellis-implement-tdd` / `$trellis-review-twostage` skill 据此找到：
 - `implement.jsonl` — 文件列表和角色上下文
 - `prd.md` — 验收标准
 - `design.md` — 架构约束
@@ -405,7 +434,7 @@ pipeline: 完成即进入下一阶段         parallel+barrier: 等所有完成�
 | 依赖图定义 | `/trellis-zero-to-mvp-zh` | 规划时确定 |
 | 依赖图 → args | 主循环 | 读取 task 元数据提取 |
 | 拓扑排序 | `trellis-dag-implement` | 运行时自动计算 |
-| 单任务实现 | `trellis-implement` agent | 每个 agent 只管自己 |
+| 单任务实现 | `trellis-implement` agent（或 `$trellis-implement-tdd` skill） | 每个 agent 只管自己 |
 | 失败决策 | 主循环 + 用户 | workflow 报告，人决策 |
 | 状态持久化 | Trellis `task.py` | workflow 后更新状态 |
 
@@ -658,7 +687,7 @@ Agent 读取前端 spec 后了解 Vue3 组件规范、Element Plus 使用约定�
 {"role":"file","path":".trellis/tasks/.../01-model-api-backend/implement.md"}
 ```
 
-这样即使不传 `specs` 参数，`trellis-implement` 读取 jsonl 时也会获得 spec。
+这样即使不传 `specs` 参数，实现 agent（核心 `trellis-implement` 或 `$trellis-implement-tdd`）读取 jsonl 时也会获得 spec。
 
 #### 方式三：按任务 key 自动匹配（自定义模板）
 
